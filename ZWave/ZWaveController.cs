@@ -11,7 +11,7 @@ namespace ZWave
 {
     public class ZWaveController
     {
-        private NodeCollection _nodes = new NodeCollection();
+        private Task<NodeCollection> _getNodes;
         private string _version;
         private uint? _homeID;
         private byte? _nodeID;
@@ -75,8 +75,9 @@ namespace ZWave
             NodeSatusFailed = 7
         }
 
-        private void Channel_NodesNetworkChangeOccurred(object sender, ControllerFunctionMessage e)
+        private async void Channel_NodesNetworkChangeOccurred(object sender, ControllerFunctionMessage e)
         {
+            var nodes = await GetNodes();
             AddRemoveNodeStatus operationStatus = (AddRemoveNodeStatus)e.Payload[1];
             byte nodeId = e.Payload[2];
             if (operationStatus == AddRemoveNodeStatus.NodeStatusAddingSlave && nodeId > 0)
@@ -84,17 +85,17 @@ namespace ZWave
                 bool isAddNode = e.Function == Function.AddNodeToNetwork;
                 if (isAddNode)
                 {
-                    if (_nodes[nodeId] != null)
+                    if (nodes[nodeId] != null)
                     {
                         // This is attempt to add the same node twice.
                         return;
                     }
 
-                    _nodes.Add(new Node(nodeId, this));
+                    nodes.Add(new Node(nodeId, this));
                 }
                 else
                 {
-                    _nodes.RemoveById(nodeId);
+                    nodes.RemoveById(nodeId);
                 }
 
                 byte dataLength = e.Payload[3];
@@ -192,29 +193,30 @@ namespace ZWave
             return _nodeID.Value;
         }
 
-        public async Task<NodeCollection> DiscoverNodes(CancellationToken cancellationToken = default)
+        public Task<NodeCollection> DiscoverNodes(CancellationToken cancellationToken = default)
         {
-            var response = await Channel.Send(Function.DiscoveryNodes, cancellationToken);
-            var values = response.Skip(3).Take(29).ToArray();
-
-            var nodes = new NodeCollection();
-            var bits = new BitArray(values);
-            for (byte i = 0; i < bits.Length; i++)
+            return _getNodes = Task.Run(async () =>
             {
-                if (bits[i])
-                {
-                    var node = new Node((byte)(i + 1), this);
-                    nodes.Add(node);
-                }
-            }
+                var response = await Channel.Send(Function.DiscoveryNodes, cancellationToken);
+                var values = response.Skip(3).Take(29).ToArray();
 
-            _nodes = nodes;
-            return _nodes;
+                var nodes = new NodeCollection();
+                var bits = new BitArray(values);
+                for (byte i = 0; i < bits.Length; i++)
+                {
+                    if (bits[i])
+                    {
+                        var node = new Node((byte)(i + 1), this);
+                        nodes.Add(node);
+                    }
+                }
+                return nodes;
+            });
         }
 
         public async Task<NodeCollection> GetNodes(CancellationToken cancellationToken = default)
         {
-            return _nodes ?? await DiscoverNodes(cancellationToken);
+            return await (_getNodes ?? (_getNodes = DiscoverNodes(cancellationToken)));
         }
 
         [Flags]
